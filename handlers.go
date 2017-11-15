@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io"
 	"net/http"
 )
+
+//DocsHandler returns some documentation to help users discover the other endpoints
+func DocsHandler(w http.ResponseWriter, r *http.Request) {}
 
 /*HashHandler
   A POST to /hash should accept a password; it should return a job identifier immediate;
@@ -37,4 +41,5 @@ func StatsHandler(w http.ResponseWriter, r *http.Request) {
 	    "average": 123
 	  }
 	*/
+	io.WriteString(w, "Hello from Stats")
 }
