@@ -1,12 +1,43 @@
 package main
 
 import (
-	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
+	"time"
 )
 
 func init() {
-	fmt.Println("Initialized!")
+}
+func TestAddHash(t *testing.T) {
+	t.Parallel()
+	var wg sync.WaitGroup
+	const numHashesToTest int = 50000
+	wg.Add(numHashesToTest)
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	baseHashTable := &HashTable{}
+
+	for i := 0; i < numHashesToTest; i++ {
+
+		go func() {
+			defer wg.Done()
+			passwordLength := r.Intn(64)
+			password := make([]byte, passwordLength)
+			rand.Read(password)
+			//fmt.Println("baseHashTable  ", &baseHashTable)
+			newHashID := baseHashTable.addHash(password)
+			time.Sleep(8 * time.Second) // can we get something to wait on here?
+			if !baseHashTable.checkPassword(newHashID, password) {
+				t.Errorf("Password %s didn't match for user %d", string(password), newHashID)
+			}
+		}()
+
+	}
+
+	wg.Wait()
+
+	t.Log(len(baseHashTable.table), " hashes computed")
 }
 
 //When launched it should monitor a given port and wait for http connections
