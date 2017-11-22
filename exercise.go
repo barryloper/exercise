@@ -14,6 +14,7 @@ var (
 	address = flag.String("address", "localhost", "Enter the FQDN or IP address on which the server will listen")
 )
 
+
 func main() {
 	flag.Parse()
 

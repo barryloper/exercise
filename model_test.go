@@ -7,17 +7,19 @@ import (
 	"time"
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 func TestPasswordStore_updateAverageHashTime(t *testing.T) {
 	// Tests that updating the average asynchronously results in the expected average
 
 	t.Parallel()
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	store := PasswordStore{}
 	var times [100]time.Duration //an array of integers representing seconds
 	var sumtimes time.Duration
 	for i := range times {
-		times[i] = time.Duration(r.Int63n(24)) * time.Hour
+		times[i] = time.Duration(rand.Int63n(24)) * time.Hour
 		sumtimes += times[i]
 
 	}

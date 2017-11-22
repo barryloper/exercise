@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha512"
-	"log"
 	"sync"
 	"time"
 )
@@ -46,13 +45,14 @@ func (h *PasswordStore) updateAverageHashTime(hashDuration time.Duration) {
 
 }
 
-func (h *PasswordStore) addHash(password []byte) (int, <-chan [hashsize]byte) {
+func (h *PasswordStore) addHash(password []byte) (int, <-chan [hashsize]byte, error) {
+	var err error = nil
 	h.mutex.Lock()             // need to lock so we get a valid hash number
 	hashID := len(h.passwords) // the new hash will be this element in the hash table
 	newSalt := make([]byte, hashsize)
-	_, err := rand.Read(newSalt)
+	_, err = rand.Read(newSalt)
 	if err != nil {
-		log.Fatal("Couldn't generate salt.")
+		return hashID, nil, err
 	}
 	h.passwords = append(h.passwords, Password{salt: newSalt}) // zero'd hash for now
 	h.mutex.Unlock()
@@ -73,7 +73,7 @@ func (h *PasswordStore) addHash(password []byte) (int, <-chan [hashsize]byte) {
 		hashValueChannel <- hashEntry.hash // callers may optionally wait on this channel and get the hash
 	}()
 
-	return hashID, hashValueChannel
+	return hashID, hashValueChannel, err
 }
 
 func (h *PasswordStore) getHash(number int) [hashsize]byte {

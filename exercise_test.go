@@ -7,11 +7,13 @@ import (
 	"time"
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 func TestAddHash(t *testing.T) {
 	t.Parallel()
 	const numHashesToTest int = 100
 	const maxPasswordLengthBytes int = 64
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	baseHashTable := &PasswordStore{}
 
 	var wg sync.WaitGroup
@@ -20,12 +22,16 @@ func TestAddHash(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			passwordLength := r.Intn(maxPasswordLengthBytes)
+			passwordLength := rand.Intn(maxPasswordLengthBytes)
 			password := make([]byte, passwordLength)
-			r.Read(password)
-			newHashID, resultChannel := baseHashTable.addHash(password)
+			rand.Read(password)
+			newHashID, resultChannel, err := baseHashTable.addHash(password)
+			if err != nil {
+				t.Error("Error beginning the hash add")
+				t.Fail()
+			}
 			<-resultChannel //wait for result
-			
+
 			if !baseHashTable.checkPassword(newHashID, password) {
 				t.Errorf("Password %s didn't match for user %d", string(password), newHashID)
 				t.Fail()

@@ -1,9 +1,37 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 )
+
+// global password store is blank on startup
+var passwordStore *PasswordStore = &PasswordStore{}
+
+// response json body of a GET to the password handler
+type credential struct {
+	userID       int    `json:"userId"`
+	passwordHash string `json:"passwordHash"`
+}
+
+// expected json body of a POST to the password handler
+type password struct {
+	password string `json:"password"`
+}
+
+func getCredential(id int) *credential {
+	hash := passwordStore.getHash(id)
+	encodedHash := base64.StdEncoding.EncodeToString(hash[:])
+	return &credential{id, encodedHash}
+}
+
+func storePassword(password *password) (int, error) {
+	userID, _, err := passwordStore.addHash([]byte(password.password))
+	return userID, err
+}
 
 //DocsHandler returns some documentation to help users discover the other endpoints
 func DocsHandler(w http.ResponseWriter, r *http.Request) {}
@@ -17,6 +45,42 @@ func DocsHandler(w http.ResponseWriter, r *http.Request) {}
   it should return the base64 encoded password hash for the corresponding POST request.
 */
 func HashHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		userID := r.URL.Path[len("/hash/"):]
+		if len(userID) > 0 {
+			id, err := strconv.Atoi(userID)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				io.WriteString(w, "Invalid url")
+				return
+			}
+			credentials := getCredential(id)
+			if credentials != nil {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(credentials)
+			}
+		}
+
+	case http.MethodPost:
+		userPassword := password{}
+		var jobID int
+		var err error
+		err = json.NewDecoder(r.Body).Decode(&userPassword)
+		jobID, err = storePassword(&userPassword)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		credentials := credential{userID: jobID}
+		json.NewEncoder(w).Encode(credentials)
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 	// POST
 	// return a job identifier (to find the password hash later)
 	// wait 5 seconds
