@@ -14,16 +14,21 @@ var (
 	address = flag.String("address", "localhost", "Enter the FQDN or IP address on which the server will listen")
 )
 
-
 func main() {
 	flag.Parse()
+	// initialize the store
+	// pass the store into a custom handler that implements http, or custom server?
+	// function that returns a handler function?
+	// or pass a channel into those things so they can communicate with
+	// a data-store goroutine...
 
+	db := NewPasswordStore()
+	muxer := MakeMuxer(db)
 	// combine port and address flags
 	listenURL := fmt.Sprintf("%s:%d", *address, *port)
-	http.HandleFunc("/", DocsHandler)
-	http.HandleFunc("/hash", HashHandler)
-	http.HandleFunc("/stats", StatsHandler)
-	//todo: allow port as cli arg
+
+	//muxer.HandleFunc("/hash/", RestEndpoint("/hash/", MethodMap{http.MethodGet: HashHandler}))
+
 	fmt.Printf("Listening on %s\n", listenURL)
-	log.Fatal(http.ListenAndServe(listenURL, nil))
+	log.Fatal(http.ListenAndServe(listenURL, muxer))
 }

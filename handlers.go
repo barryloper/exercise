@@ -3,38 +3,89 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
-// global password store is blank on startup
-var passwordStore *PasswordStore = &PasswordStore{}
+// MakeMuxer sets up the routes and methods and returns a configured multiplexer
+// requires a pointer to a PasswordStore instance
+func MakeMuxer(db *PasswordStore) *http.ServeMux {
+	mux := http.NewServeMux()
 
-// response json body of a GET to the password handler
-type credential struct {
-	userID       int    `json:"userId"`
-	passwordHash string `json:"passwordHash"`
+	// todo: this still seems a bit clunky. how can this be done better?
+	hashMethodHandlers := make(methodMap, 2)
+	hashMethodHandlers[http.MethodGet] = getHash
+	hashMethodHandlers[http.MethodPost] = addHash
+
+	statsMethodHandlers := make(methodMap, 1)
+	statsMethodHandlers[http.MethodGet] = getStats
+
+	hashHandler := restEndpoint{
+		route:   "/hash/",
+		methods: hashMethodHandlers,
+		db:      db,
+	}
+
+	statsHandler := restEndpoint{
+		route:   "/stats",
+		methods: statsMethodHandlers,
+		db:      db,
+	}
+
+	mux.Handle(hashHandler.route, hashHandler)
+	mux.Handle(statsHandler.route, statsHandler)
+	return mux
 }
 
-// expected json body of a POST to the password handler
-type password struct {
-	password string `json:"password"`
+// body of a /hash response
+type credentialBody struct {
+	UserID       int    `json:"userId"`
+	PasswordHash string `json:"passwordHash,omitempty"`
 }
 
-func getCredential(id int) *credential {
-	hash := passwordStore.getHash(id)
-	encodedHash := base64.StdEncoding.EncodeToString(hash[:])
-	return &credential{id, encodedHash}
+// expected body of a POST to the /hash handler
+type passwordBody struct {
+	Password string `json:"password"`
 }
 
-func storePassword(password *password) (int, error) {
-	userID, _, err := passwordStore.addHash([]byte(password.password))
-	return userID, err
+// body of a /stats response
+type statsBody struct { // todo: don't know if json can encode these types
+	Total   int64         `json: "total"`
+	Average time.Duration `json: "average"`
 }
 
-//DocsHandler returns some documentation to help users discover the other endpoints
-func DocsHandler(w http.ResponseWriter, r *http.Request) {}
+// A methodHandler function should return a value encodable via json.Encode, along with an http.Status* constant
+type methodHandler func([]string, *PasswordStore, *http.Request) (interface{}, int)
+
+// strings in methodMap should be one of the http method constants defined in the http package
+type methodMap map[string]methodHandler
+
+// restEndpoint implements http.Handler interface
+// it is configured with a MethodMap, route and given access to a database
+type restEndpoint struct {
+	route   string
+	methods methodMap
+	db      *PasswordStore
+}
+
+func (endpoint restEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/json; charset=utf-8")
+	pathArgs := strings.Split(r.URL.Path[len(endpoint.route):], "/")
+
+	methodFn := endpoint.methods[r.Method]
+
+	if methodFn == nil {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+
+	value, httpErr := endpoint.methods[r.Method](pathArgs, endpoint.db, r)
+
+	w.WriteHeader(httpErr)
+	json.NewEncoder(w).Encode(value)
+
+}
 
 /*HashHandler
   A POST to /hash should accept a password; it should return a job identifier immediate;
@@ -44,51 +95,46 @@ func DocsHandler(w http.ResponseWriter, r *http.Request) {}
   A GET to /hash should accept a job identifier;
   it should return the base64 encoded password hash for the corresponding POST request.
 */
-func HashHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/json")
-
-	switch r.Method {
-	case http.MethodGet:
-		userID := r.URL.Path[len("/hash/"):]
-		if len(userID) > 0 {
-			id, err := strconv.Atoi(userID)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				io.WriteString(w, "Invalid url")
-				return
-			}
-			credentials := getCredential(id)
-			if credentials != nil {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(credentials)
-			}
-		}
-
-	case http.MethodPost:
-		userPassword := password{}
-		var jobID int
-		var err error
-		err = json.NewDecoder(r.Body).Decode(&userPassword)
-		jobID, err = storePassword(&userPassword)
+func getHash(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}, int) {
+	// GET
+	// return base64 encoded hash for job id
+	userID := pathArgs[0]
+	if len(userID) > 0 {
+		id, err := strconv.Atoi(userID)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+			return "User ID must be an integer", http.StatusInternalServerError
 		}
-		w.WriteHeader(http.StatusOK)
-		credentials := credential{userID: jobID}
-		json.NewEncoder(w).Encode(credentials)
 
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		hash, err := db.getHash(id)
+		if err != nil {
+			return "User not found", http.StatusNotFound
+		}
+		encodedHash := base64.StdEncoding.EncodeToString(hash[:])
+		return &credentialBody{id, encodedHash}, http.StatusOK
 	}
+
+	// return "Please specify user ID", http.StatusNotFound
+	return "OK", http.StatusOK
+}
+
+func addHash(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}, int) {
 	// POST
 	// return a job identifier (to find the password hash later)
 	// wait 5 seconds
 	// compute sha512 password hash and store it associated with the job id
 	// store number of milliseconds it took the hash to complete
+	userPassword := passwordBody{}
+	inputErr := json.NewDecoder(r.Body).Decode(&userPassword)
+	if inputErr != nil {
+		return "Error decoding provided password", http.StatusInternalServerError
+	}
 
-	// GET
-	// return base64 encoded hash for job id
+	jobID, _, serverErr := db.addHash([]byte(userPassword.Password))
+	if serverErr != nil {
+		return "Error storing password", http.StatusInternalServerError
+	}
+	return credentialBody{UserID: jobID}, http.StatusOK
+
 }
 
 /*StatsHandler
@@ -96,7 +142,7 @@ A GET to /stats should accept no data;
 it should return a JSON data structure for the total hash requests since server start
 and the average time of a hash request in milliseconds, not including the 500ms wait.
 */
-func StatsHandler(w http.ResponseWriter, r *http.Request) {
+func getStats(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}, int) {
 	// GET
 	// returns stats in the following example format
 	/*
@@ -105,5 +151,7 @@ func StatsHandler(w http.ResponseWriter, r *http.Request) {
 	    "average": 123
 	  }
 	*/
-	io.WriteString(w, "Hello from Stats")
+
+	stats := &statsBody{db.passwordCount, db.averageHashTime / time.Millisecond}
+	return stats, http.StatusOK
 }

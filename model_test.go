@@ -15,7 +15,7 @@ func TestPasswordStore_updateAverageHashTime(t *testing.T) {
 
 	t.Parallel()
 
-	store := PasswordStore{}
+	store := NewPasswordStore()
 	var times [100]time.Duration //an array of integers representing seconds
 	var sumtimes time.Duration
 	for i := range times {
@@ -41,4 +41,40 @@ func TestPasswordStore_updateAverageHashTime(t *testing.T) {
 		t.Fail()
 	}
 
+}
+
+func TestAddHash(t *testing.T) {
+	t.Parallel()
+	const numHashesToTest int = 100
+	const maxPasswordLengthBytes int = 64
+	baseHashTable := NewPasswordStore()
+
+	wg := sync.WaitGroup{}
+	for i := 0; i < numHashesToTest; i++ {
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			passwordLength := rand.Intn(maxPasswordLengthBytes)
+			password := make([]byte, passwordLength)
+			rand.Read(password)
+			newHashID, resultChannel, err := baseHashTable.addHash(password)
+			if err != nil {
+				t.Error("Error beginning the hash add")
+				t.Fail()
+			}
+			<-resultChannel //wait for result
+
+			if !baseHashTable.CheckPassword(newHashID, password) {
+				t.Errorf("Password %s didn't match for user %d", string(password), newHashID)
+				t.Fail()
+			}
+		}()
+
+	}
+	baseHashTable.Sync()
+	wg.Wait()
+
+	count, duration := baseHashTable.GetStats()
+	t.Log("Added", count, "hashes in", duration)
 }
