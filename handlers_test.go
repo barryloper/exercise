@@ -4,8 +4,6 @@ import (
 	"testing"
 )
 
-func TestDocsHandler(t *testing.T) {}
-
 //A GET to /stats should accept no data;
 //it should return a JSON data structure for the total hash requests since server start
 //and the average time of a hash request in milliseconds.

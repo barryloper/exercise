@@ -42,7 +42,7 @@ func MakeMuxer(db *PasswordStore) *http.ServeMux {
 // body of a /hash response
 type credentialBody struct {
 	UserID       int    `json:"userId"`
-	PasswordHash string `json:"passwordHash,omitempty"`
+	PasswordHash string `json:"passwordHash,omitempty"` // []byte is marshalled into a base64 encoded string
 }
 
 // expected body of a POST to the /hash handler
@@ -52,8 +52,8 @@ type passwordBody struct {
 
 // body of a /stats response
 type statsBody struct { // todo: don't know if json can encode these types
-	Total   int64         `json: "total"`
-	Average time.Duration `json: "average"`
+	Total   int           `json:"total"`
+	Average time.Duration `json:"average"`
 }
 
 // A methodHandler function should return a value encodable via json.Encode, along with an http.Status* constant
@@ -105,11 +105,11 @@ func getHash(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}
 			return "User ID must be an integer", http.StatusInternalServerError
 		}
 
-		hash, err := db.getHash(id)
+		hash, err := db.GetHash(id)
 		if err != nil {
 			return "User not found", http.StatusNotFound
 		}
-		encodedHash := base64.StdEncoding.EncodeToString(hash[:])
+		encodedHash := base64.StdEncoding.EncodeToString(hash[0:])
 		return &credentialBody{id, encodedHash}, http.StatusOK
 	}
 
@@ -129,7 +129,7 @@ func addHash(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}
 		return "Error decoding provided password", http.StatusInternalServerError
 	}
 
-	jobID, _, serverErr := db.addHash([]byte(userPassword.Password))
+	jobID, serverErr := db.SavePassword([]byte(userPassword.Password))
 	if serverErr != nil {
 		return "Error storing password", http.StatusInternalServerError
 	}
@@ -152,6 +152,7 @@ func getStats(pathArgs []string, db *PasswordStore, r *http.Request) (interface{
 	  }
 	*/
 
-	stats := &statsBody{db.passwordCount, db.averageHashTime / time.Millisecond}
+	count, hashTime := db.GetStats()
+	stats := &statsBody{count, hashTime / time.Millisecond}
 	return stats, http.StatusOK
 }
