@@ -4,7 +4,7 @@ import (
 	"math/rand"
 )
 
-const numHashesToTest int = 1000
+const numHashesToTest int = 100
 const minPasswordLength int = 6
 const maxPasswordLength int = 32
 const defaultMinPasswordLength int = 6

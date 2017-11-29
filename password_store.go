@@ -4,12 +4,14 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
 
 // makes changing hash function a little easier
 const hashsize int = sha512.Size
+const hashBufferSize int = 10
 
 var hashfunction = sha512.Sum512
 
@@ -17,144 +19,143 @@ var hashfunction = sha512.Sum512
 type Password struct {
 	hash [hashsize]byte
 	salt []byte
-	lock sync.RWMutex
-}
-
-type HashStats struct {
-	averageHashTime time.Duration
-	passwordCount   int // helps with calculating average duration since len(PasswordStore.passwords) might include empty hashes
-	hashesInFlight  sync.WaitGroup
-	lock            sync.RWMutex
 }
 
 // PasswordStore stores an array of hashes along with a mutex for concurrent access of
 // that array
 type PasswordStore struct {
-	passwords []*Password
-	lock      sync.RWMutex
-	stats     *HashStats
+	passwords             []*Password
+	newUsers              chan blankPassword
+	updatedPasswords      chan newHash
+	userQuery             chan int
+	userResponse          chan Password
+	errorResponse         chan bool
+	statsQuery            chan bool
+	statsResponse         chan statsMessage
+	hashesInFlight        sync.WaitGroup
+	averageHashTime       time.Duration
+	completePasswordCount uint
+}
+
+// passwordTemplate is the structure useful for creating new passwords
+type blankPassword struct {
+	ID   int
+	salt []byte
+}
+
+type newHash struct {
+	ID          int
+	hash        [hashsize]byte
+	computeTime time.Duration
+}
+
+type statsMessage struct {
+	count           uint
+	averageHashTime time.Duration
 }
 
 // NewPasswordStore constructor of PasswordStore for convention
 func NewPasswordStore() *PasswordStore {
-	return &PasswordStore{stats: &HashStats{}}
+	store := &PasswordStore{
+		newUsers:         make(chan blankPassword),
+		updatedPasswords: make(chan newHash, hashBufferSize),
+		userQuery:        make(chan int),
+		userResponse:     make(chan Password),
+		statsQuery:       make(chan bool),
+		statsResponse:    make(chan statsMessage),
+	}
+	go store.startStoreManager()
+	return store
 }
 
 // SavePassword salts, hashes, and saves a password to the password store
 // It returns the ID of that hash for later retrieval.
 // It returns a channel on which you can wait to receive the hash once calculated
-func (store *PasswordStore) SavePassword(password []byte) (int, error) {
-	var err error
-	store.lock.Lock() // need to lock so we get a valid hash number
-	defer store.lock.Unlock()
-
-	store.stats.hashInFlight()
-
-	hashID := len(store.passwords) // the new hash will be this element in the hash table
-	newPassword := Password{salt: make([]byte, hashsize)}
-	_, err = rand.Read(newPassword.salt)
-	if err != nil {
-		return hashID, err
-	}
-	store.passwords = append(store.passwords, &newPassword) // zero'd hash for now
+func (store *PasswordStore) SavePassword(password []byte) int {
+	newTemplate := <-store.newUsers
 
 	// compute the hash in the background
-	go func(p *Password) {
-		time.Sleep(5 * time.Second)
+	ComputeHash := func(template blankPassword, password []byte) {
+		time.Sleep(5 * time.Second) // part of the spec.
+
 		start := time.Now()
-		saltedPass := append(password, p.salt...)
-		computed := hashfunction(saltedPass) // todo: avoid copying this hash around?
-		elapsed := time.Since(start)
-		store.stats.hashComplete(elapsed)
+		hash := hashfunction(append(password, template.salt...))
+		duration := time.Since(start)
 
-		p.updateHash(computed)
+		store.updatedPasswords <- newHash{template.ID, hash, duration}
 
-	}(&newPassword)
+	}
+	go ComputeHash(newTemplate, password)
 
-	return hashID, err
+	return newTemplate.ID
 }
 
 // GetHash takes a userID and returns the associated password hash
 func (store *PasswordStore) GetHash(number int) ([hashsize]byte, error) {
-	store.lock.RLock()
-	defer store.lock.RUnlock()
-	user, err := store.checkoutUser(number)
-	if err != nil {
-		return [hashsize]byte{}, err
+	store.userQuery <- number
+	select {
+	case user := <-store.userResponse:
+		return user.hash, nil
+	case <-store.errorResponse:
+		return [hashsize]byte{}, errors.New("Invalid UserID")
 	}
-	defer store.checkinUser(number)
-
-	return user.hash, nil
 }
 
 // CheckPassword compares the salted hash of the supplied password to the one from the password store
 func (store *PasswordStore) CheckPassword(userID int, password []byte) bool {
-	store.lock.RLock()
-	user, err := store.checkoutUser(userID)
-	store.lock.RUnlock()
-	if err != nil {
+	store.userQuery <- userID
+	select {
+	case user := <-store.userResponse:
+		providedHash := hashfunction(append(password, user.salt...))
+		return providedHash == user.hash
+	case <-store.errorResponse:
 		return false
 	}
-	// don't need to check in user if err != nil
-	defer store.checkinUser(userID)
-
-	providedHash := hashfunction(append(password, user.salt...))
-	return providedHash == user.hash
 }
 
 // GetStats returns the number of passwords and average password hashing time from the password store
-func (store *PasswordStore) GetStats() (int, time.Duration) {
-	store.stats.lock.RLock()
-	defer store.stats.lock.RUnlock()
-	return store.stats.passwordCount, store.stats.averageHashTime
+func (store *PasswordStore) GetStats() statsMessage {
+	store.statsQuery <- true
+	stats := <-store.statsResponse
+	return stats
 }
 
-// Private methods ----------------------------
-
-// Returns a user locked for read. Unlock the user once you are done
-func (store *PasswordStore) checkoutUser(userID int) (*Password, error) {
-	store.lock.RLock() // needed to consistently read len(h.passwords)
-	defer store.lock.RUnlock()
-
-	if userID < len(store.passwords) {
-		// locking here so the caller receives a locked entity
-		store.passwords[userID].lock.Lock()
-		return store.passwords[userID], nil
+func newBlankPassword(ID int) blankPassword {
+	var p blankPassword
+	p.ID = ID
+	p.salt = make([]byte, hashsize)
+	_, err := rand.Read(p.salt)
+	if err != nil {
+		log.Fatal("Error generating random salt.", err)
 	}
-	return &Password{}, errors.New("Invalid user ID")
+	return p
 }
 
-func (store *PasswordStore) checkinUser(userID int) error {
-	store.lock.RLock() // needed to consistently read len(h.passwords)
-	defer store.lock.RUnlock()
-
-	if userID < len(store.passwords) {
-		// locking here so the caller receives a user locked for read
-		store.passwords[userID].lock.Unlock()
-		return nil
+func (store *PasswordStore) startStoreManager() {
+	// no other goroutines should modify the password store
+	bp := newBlankPassword(len(store.passwords)) // first blank password for the newUsers channel
+	for {
+		select {
+		case store.newUsers <- bp:
+			store.passwords = append(store.passwords, &Password{salt: bp.salt})
+			store.hashesInFlight.Add(1)
+			bp = newBlankPassword(len(store.passwords))
+		case <-store.statsQuery:
+			store.statsResponse <- statsMessage{count: store.completePasswordCount, averageHashTime: store.averageHashTime}
+		case updateRequest := <-store.updatedPasswords:
+			store.passwords[updateRequest.ID].hash = updateRequest.hash
+			store.completePasswordCount++
+			store.averageHashTime = store.averageHashTime + (updateRequest.computeTime-store.averageHashTime)/time.Duration(store.completePasswordCount)
+			store.hashesInFlight.Done()
+		case userID := <-store.userQuery:
+			if userID < len(store.passwords) {
+				store.userResponse <- *store.passwords[userID]
+			} else {
+				store.errorResponse <- true
+			}
+		default:
+			time.Sleep(1 * time.Millisecond)
+		}
 	}
-	return errors.New("Invalid user ID")
-}
 
-func (stats *HashStats) hashInFlight() {
-	stats.lock.Lock()
-	defer stats.lock.Unlock()
-	stats.hashesInFlight.Add(1)
-}
-
-func (stats *HashStats) hashComplete(hashDuration time.Duration) {
-	stats.lock.Lock()
-	defer stats.lock.Unlock()
-
-	stats.passwordCount++
-	stats.averageHashTime = stats.averageHashTime + (hashDuration-stats.averageHashTime)/time.Duration(stats.passwordCount)
-	stats.hashesInFlight.Done()
-	return
-
-}
-
-func (p *Password) updateHash(hash [hashsize]byte) {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-	p.hash = hash
 }

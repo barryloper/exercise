@@ -52,7 +52,7 @@ type passwordBody struct {
 
 // body of a /stats response
 type statsBody struct { // todo: don't know if json can encode these types
-	Total   int           `json:"total"`
+	Total   uint          `json:"total"`
 	Average time.Duration `json:"average"`
 }
 
@@ -129,10 +129,7 @@ func addHash(pathArgs []string, db *PasswordStore, r *http.Request) (interface{}
 		return "Error decoding provided password", http.StatusInternalServerError
 	}
 
-	jobID, serverErr := db.SavePassword([]byte(userPassword.Password))
-	if serverErr != nil {
-		return "Error storing password", http.StatusInternalServerError
-	}
+	jobID := db.SavePassword([]byte(userPassword.Password))
 	return credentialBody{UserID: jobID}, http.StatusOK
 
 }
@@ -152,7 +149,7 @@ func getStats(pathArgs []string, db *PasswordStore, r *http.Request) (interface{
 	  }
 	*/
 
-	count, hashTime := db.GetStats()
-	stats := &statsBody{count, hashTime / time.Millisecond}
+	statsMessage := db.GetStats()
+	stats := &statsBody{statsMessage.count, statsMessage.averageHashTime / time.Millisecond}
 	return stats, http.StatusOK
 }
