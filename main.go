@@ -16,19 +16,15 @@ var (
 
 func main() {
 	flag.Parse()
-	// initialize the store
-	// pass the store into a custom handler that implements http, or custom server?
-	// function that returns a handler function?
-	// or pass a channel into those things so they can communicate with
-	// a data-store goroutine...
-
+	// initialize the data store
 	db := NewPasswordStore()
+	// pass the data store to the configured muxer
+	// configures and handles the routes (handlers.go)
 	muxer := MakeMuxer(db)
-	// combine port and address flags
+	// combine port and address cli flags
 	listenURL := fmt.Sprintf("%s:%d", *address, *port)
 
-	//muxer.HandleFunc("/hash/", RestEndpoint("/hash/", MethodMap{http.MethodGet: HashHandler}))
-
-	fmt.Printf("Listening on %s\n", listenURL)
+	log.Printf("Listening on %s\n", listenURL)
 	log.Fatal(http.ListenAndServe(listenURL, muxer))
+
 }
